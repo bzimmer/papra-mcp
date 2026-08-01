@@ -6,12 +6,13 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 import httpx
 import pymupdf
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("papra_mcp")
@@ -158,7 +159,7 @@ def _pretty_json(data: Any) -> str:
 # Server
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("papra_mcp", lifespan=lifespan)
+mcp = MCPServer("papra_mcp", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Input models
@@ -204,6 +205,12 @@ class ListDocsInput(PaginatedOrgBase):
         default=None,
         description="Optional search query. Supports filters: name:, content:, tag:, created: and operators AND, OR, NOT",
     )
+    sort_field: Literal["createdAt", "updatedAt", "name", "documentDate"] | None = Field(
+        default=None, description="Field to sort by (default createdAt)"
+    )
+    sort_order: Literal["asc", "desc"] | None = Field(
+        default=None, description="Sort order (default desc)"
+    )
 
 
 PaginatedOrgInput = PaginatedOrgBase
@@ -211,6 +218,12 @@ PaginatedOrgInput = PaginatedOrgBase
 
 class SearchDocsInput(PaginatedOrgBase):
     search_query: str = Field(..., description="Search query string", min_length=1)
+    sort_field: Literal["createdAt", "updatedAt", "name", "documentDate"] | None = Field(
+        default=None, description="Field to sort by (default createdAt)"
+    )
+    sort_order: Literal["asc", "desc"] | None = Field(
+        default=None, description="Sort order (default desc)"
+    )
 
 
 class UpdateDocInput(DocBase):
@@ -411,6 +424,8 @@ async def papra_list_documents(params: ListDocsInput) -> str:
                 "pageIndex": params.page_index,
                 "pageSize": params.page_size,
                 "searchQuery": params.search_query,
+                "sortField": params.sort_field,
+                "sortOrder": params.sort_order,
             },
         )
         return _pretty_json(data)
@@ -567,11 +582,13 @@ async def papra_search_documents(params: SearchDocsInput) -> str:
     try:
         data = await papra_request(
             "GET",
-            f"/api/organizations/{params.organization_id}/documents/search",
+            f"/api/organizations/{params.organization_id}/documents",
             params={
                 "searchQuery": params.search_query,
                 "pageIndex": params.page_index,
                 "pageSize": params.page_size,
+                "sortField": params.sort_field,
+                "sortOrder": params.sort_order,
             },
         )
         return _pretty_json(data)
@@ -857,9 +874,35 @@ async def papra_apply_tagging_rule(params: ApplyTaggingRuleInput) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _split_env_list(name: str, default: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
 def main() -> None:
-    """Run the Papra MCP server."""
-    mcp.run()
+    """Run the Papra MCP server.
+
+    Runs over stdio by default. Set PAPRA_MCP_TRANSPORT=streamable-http to serve
+    over HTTP instead, configured via PAPRA_MCP_HOST, PAPRA_MCP_PORT,
+    PAPRA_MCP_ALLOWED_HOSTS and PAPRA_MCP_ALLOWED_ORIGINS (comma-separated lists,
+    used for the transport's DNS-rebinding protection).
+    """
+    transport = os.environ.get("PAPRA_MCP_TRANSPORT", "stdio")
+    if transport == "stdio":
+        mcp.run()
+        return
+
+    mcp.run(
+        transport=transport,
+        host=os.environ.get("PAPRA_MCP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("PAPRA_MCP_PORT", "8000")),
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=_split_env_list("PAPRA_MCP_ALLOWED_HOSTS", "127.0.0.1:*,localhost:*,[::1]:*"),
+            allowed_origins=_split_env_list(
+                "PAPRA_MCP_ALLOWED_ORIGINS", "http://127.0.0.1:*,http://localhost:*"
+            ),
+        ),
+    )
 
 
 if __name__ == "__main__":

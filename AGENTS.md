@@ -8,7 +8,7 @@
 - Run tests: `pytest tests/` (no live Papra instance required, uses mocked HTTP requests)
 
 ## Architecture
-- Single-file application: all logic in `papra_mcp.py`, built with FastMCP.
+- Single-file application: all logic in `papra_mcp.py`, built with `mcp.server.MCPServer` (mcp SDK 2.x).
 - `httpx.AsyncClient` is initialized once at startup via the lifespan context manager, using env vars for base URL and auth header.
 - PDF content is extracted to plain text via `pymupdf`; falls back to base64-encoded JSON for non-text PDFs or other binary content.
 

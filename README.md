@@ -14,9 +14,9 @@ An [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server for th
 ## Installation
 
 ```bash
-git clone https://github.com/Rigare/papra-mcp.git
+git clone https://github.com/bzimmer/papra-mcp.git
 cd papra-mcp
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 ## Configuration
@@ -60,6 +60,18 @@ claude mcp add papra -- python /path/to/papra-mcp/papra_mcp.py
 ```
 
 Then set the environment variables in your shell or `.env` file before launching Claude Code.
+
+### HTTP transport
+
+By default the server runs over stdio. To serve over Streamable HTTP instead (e.g. for a container or remote deployment), set:
+
+| Variable | Description |
+|----------|-------------|
+| `PAPRA_MCP_TRANSPORT` | Set to `streamable-http` (or `sse`) to switch from the stdio default |
+| `PAPRA_MCP_HOST` | Host to bind to (default `127.0.0.1`) |
+| `PAPRA_MCP_PORT` | Port to bind to (default `8000`) |
+| `PAPRA_MCP_ALLOWED_HOSTS` | Comma-separated `Host` header allowlist for DNS-rebinding protection (default `127.0.0.1:*,localhost:*,[::1]:*`) |
+| `PAPRA_MCP_ALLOWED_ORIGINS` | Comma-separated `Origin` header allowlist (default `http://127.0.0.1:*,http://localhost:*`) |
 
 ### Development
 
