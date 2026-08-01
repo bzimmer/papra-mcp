@@ -67,7 +67,7 @@ By default the server runs over stdio. To serve over Streamable HTTP instead (e.
 
 | Variable | Description |
 |----------|-------------|
-| `PAPRA_MCP_TRANSPORT` | Set to `streamable-http` (or `sse`) to switch from the stdio default |
+| `PAPRA_MCP_TRANSPORT` | Set to `streamable-http` to switch from the stdio default |
 | `PAPRA_MCP_HOST` | Host to bind to (default `127.0.0.1`) |
 | `PAPRA_MCP_PORT` | Port to bind to (default `8000`) |
 | `PAPRA_MCP_ALLOWED_HOSTS` | Comma-separated `Host` header allowlist for DNS-rebinding protection (default `127.0.0.1:*,localhost:*,[::1]:*`) |

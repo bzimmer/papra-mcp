@@ -6,13 +6,14 @@ import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
 import pymupdf
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("papra_mcp")
@@ -50,15 +51,16 @@ async def lifespan(_server):
             "Create an API key in your Papra account settings."
         )
 
-    _client = httpx.AsyncClient(
+    client = httpx.AsyncClient(
         base_url=base_url,
         headers={"Authorization": f"Bearer {api_key}"},
         timeout=30.0,
     )
+    _client = client
     try:
         yield {}
     finally:
-        await _client.aclose()
+        await client.aclose()
         _client = None
 
 
@@ -99,6 +101,18 @@ async def papra_file_request(path: str) -> httpx.Response:
     return response
 
 
+async def papra_upload_request(
+    path: str, *, files: dict[str, Any], data: dict[str, Any] | None = None
+) -> httpx.Response:
+    """Make an authenticated multipart POST request and return the raw response (for uploads)."""
+    if _client is None:
+        raise RuntimeError("HTTP client not initialized — server lifespan not started.")
+
+    response = await _client.request("POST", path, files=files, data=data)
+    response.raise_for_status()
+    return response
+
+
 _TEXT_CONTENT_TYPES = frozenset({
     "text/plain",
     "text/html",
@@ -130,7 +144,7 @@ def _extract_pdf_text(data: bytes) -> str | None:
     """
     try:
         with pymupdf.open(stream=data, filetype="pdf") as doc:
-            pages = [text for page in doc if (text := page.get_text().strip())]
+            pages = [text for page in doc if (text := cast(str, page.get_text()).strip())]
             return "\n\n".join(pages) if pages else None
     except Exception:
         logger.debug("PDF text extraction failed", exc_info=True)
@@ -140,12 +154,13 @@ def _extract_pdf_text(data: bytes) -> str | None:
 def format_error(exc: Exception) -> str:
     """Format an exception into an actionable error message."""
     if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
         try:
-            detail = exc.response.json().get("message", exc.response.text)
-        except Exception:
-            detail = exc.response.text
+            detail = response.json().get("message", response.text)
+        except (json.JSONDecodeError, AttributeError):
+            detail = response.text
         return (
-            f"Papra API error ({exc.response.status_code}): {detail}. "
+            f"Papra API error ({response.status_code}): {detail}. "
             "Check the API key permissions and resource IDs."
         )
     return f"Error: {exc}"
@@ -276,13 +291,13 @@ class ApplyTaggingRuleInput(OrgBase):
 
 @mcp.tool(
     name="papra_check_api_key",
-    annotations={
-        "title": "Check API Key",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Check API Key",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_check_api_key() -> str:
     """Check the currently used API key. Returns the key's ID, name, and permissions."""
@@ -290,6 +305,7 @@ async def papra_check_api_key() -> str:
         data = await papra_request("GET", "/api/api-keys/current")
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
@@ -300,13 +316,13 @@ async def papra_check_api_key() -> str:
 
 @mcp.tool(
     name="papra_list_organizations",
-    annotations={
-        "title": "List Organizations",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Organizations",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_list_organizations() -> str:
     """List all organizations accessible to the authenticated user."""
@@ -314,18 +330,19 @@ async def papra_list_organizations() -> str:
         data = await papra_request("GET", "/api/organizations")
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_get_organization",
-    annotations={
-        "title": "Get Organization",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Organization",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_get_organization(params: OrgId) -> str:
     """Get details of a specific organization by its ID."""
@@ -333,18 +350,19 @@ async def papra_get_organization(params: OrgId) -> str:
         data = await papra_request("GET", f"/api/organizations/{params.organization_id}")
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_create_organization",
-    annotations={
-        "title": "Create Organization",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Create Organization",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_create_organization(params: CreateOrgInput) -> str:
     """Create a new organization. The name must be 3-50 characters."""
@@ -352,18 +370,19 @@ async def papra_create_organization(params: CreateOrgInput) -> str:
         data = await papra_request("POST", "/api/organizations", body={"name": params.name})
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_update_organization",
-    annotations={
-        "title": "Update Organization",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Update Organization",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_update_organization(params: OrgName) -> str:
     """Update an organization's name."""
@@ -373,18 +392,19 @@ async def papra_update_organization(params: OrgName) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_delete_organization",
-    annotations={
-        "title": "Delete Organization",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Organization",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_delete_organization(params: OrgId) -> str:
     """Delete an organization by its ID. This is a destructive operation."""
@@ -392,6 +412,7 @@ async def papra_delete_organization(params: OrgId) -> str:
         await papra_request("DELETE", f"/api/organizations/{params.organization_id}")
         return f"Organization {params.organization_id} deleted successfully."
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
@@ -402,13 +423,13 @@ async def papra_delete_organization(params: OrgId) -> str:
 
 @mcp.tool(
     name="papra_list_documents",
-    annotations={
-        "title": "List Documents",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Documents",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_list_documents(params: ListDocsInput) -> str:
     """List documents in an organization with optional pagination and search.
@@ -430,18 +451,19 @@ async def papra_list_documents(params: ListDocsInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_list_deleted_documents",
-    annotations={
-        "title": "List Deleted Documents (Trash)",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Deleted Documents (Trash)",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_list_deleted_documents(params: PaginatedOrgInput) -> str:
     """List deleted documents (trash) in an organization."""
@@ -453,18 +475,19 @@ async def papra_list_deleted_documents(params: PaginatedOrgInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_create_document",
-    annotations={
-        "title": "Create Document",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Create Document",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_create_document(params: CreateDocInput) -> str:
     """Create a new document in an organization by uploading a file.
@@ -478,31 +501,30 @@ async def papra_create_document(params: CreateDocInput) -> str:
         files = {"file": ("upload", file_bytes)}
         data = {"ocrLanguages": params.ocr_languages} if params.ocr_languages else None
 
-        response = await _client.request(
-            "POST",
+        response = await papra_upload_request(
             f"/api/organizations/{params.organization_id}/documents",
             files=files,
             data=data,
         )
-        response.raise_for_status()
 
         if response.status_code == 204:
             return "Document created successfully."
 
         return _pretty_json(response.json())
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_get_document",
-    annotations={
-        "title": "Get Document",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Document",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_get_document(params: DocId) -> str:
     """Get a document's metadata by its ID."""
@@ -513,18 +535,19 @@ async def papra_get_document(params: DocId) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_get_document_content",
-    annotations={
-        "title": "Get Document Content",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Document Content",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_get_document_content(params: DocId) -> str:
     """Get the file content of a document by its ID.
@@ -561,18 +584,19 @@ async def papra_get_document_content(params: DocId) -> str:
             "data": encoded,
         })
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_search_documents",
-    annotations={
-        "title": "Search Documents",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Search Documents",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_search_documents(params: SearchDocsInput) -> str:
     """Search documents by name or content. Supports advanced search syntax with
@@ -593,18 +617,19 @@ async def papra_search_documents(params: SearchDocsInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_get_document_statistics",
-    annotations={
-        "title": "Get Document Statistics",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Document Statistics",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_get_document_statistics(params: OrgId) -> str:
     """Get statistics (document count and total size) for an organization."""
@@ -615,18 +640,19 @@ async def papra_get_document_statistics(params: OrgId) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_update_document",
-    annotations={
-        "title": "Update Document",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Update Document",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_update_document(params: UpdateDocInput) -> str:
     """Update a document's name or content (for search indexing). Both fields are optional."""
@@ -647,18 +673,19 @@ async def papra_update_document(params: UpdateDocInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_delete_document",
-    annotations={
-        "title": "Delete Document",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Document",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_delete_document(params: DocId) -> str:
     """Soft-delete a document (moves to trash). Permanently deleted after retention period."""
@@ -669,18 +696,19 @@ async def papra_delete_document(params: DocId) -> str:
         )
         return f"Document {params.document_id} deleted successfully."
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_get_document_activity",
-    annotations={
-        "title": "Get Document Activity",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Get Document Activity",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_get_document_activity(params: DocActivityInput) -> str:
     """Get the activity log of a document."""
@@ -692,6 +720,7 @@ async def papra_get_document_activity(params: DocActivityInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
@@ -702,13 +731,13 @@ async def papra_get_document_activity(params: DocActivityInput) -> str:
 
 @mcp.tool(
     name="papra_list_tags",
-    annotations={
-        "title": "List Tags",
-        "readOnlyHint": True,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="List Tags",
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_list_tags(params: OrgId) -> str:
     """List all tags in an organization."""
@@ -716,18 +745,19 @@ async def papra_list_tags(params: OrgId) -> str:
         data = await papra_request("GET", f"/api/organizations/{params.organization_id}/tags")
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_create_tag",
-    annotations={
-        "title": "Create Tag",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Create Tag",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_create_tag(params: CreateTagInput) -> str:
     """Create a new tag in an organization with a name, color, and optional description."""
@@ -741,18 +771,19 @@ async def papra_create_tag(params: CreateTagInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_update_tag",
-    annotations={
-        "title": "Update Tag",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Update Tag",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_update_tag(params: UpdateTagInput) -> str:
     """Update a tag's name, color, or description. All fields are optional."""
@@ -775,18 +806,19 @@ async def papra_update_tag(params: UpdateTagInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_delete_tag",
-    annotations={
-        "title": "Delete Tag",
-        "readOnlyHint": False,
-        "destructiveHint": True,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Delete Tag",
+        read_only_hint=False,
+        destructive_hint=True,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_delete_tag(params: TagIdInput) -> str:
     """Delete a tag by its ID."""
@@ -797,18 +829,19 @@ async def papra_delete_tag(params: TagIdInput) -> str:
         )
         return f"Tag {params.tag_id} deleted successfully."
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_add_tag_to_document",
-    annotations={
-        "title": "Add Tag to Document",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Add Tag to Document",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_add_tag_to_document(params: DocTagInput) -> str:
     """Associate a tag with a document."""
@@ -820,18 +853,19 @@ async def papra_add_tag_to_document(params: DocTagInput) -> str:
         )
         return f"Tag {params.tag_id} added to document {params.document_id} successfully."
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_remove_tag_from_document",
-    annotations={
-        "title": "Remove Tag from Document",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": True,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Remove Tag from Document",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=True,
+    ),
 )
 async def papra_remove_tag_from_document(params: DocTagInput) -> str:
     """Remove a tag association from a document."""
@@ -842,18 +876,19 @@ async def papra_remove_tag_from_document(params: DocTagInput) -> str:
         )
         return f"Tag {params.tag_id} removed from document {params.document_id} successfully."
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
 @mcp.tool(
     name="papra_apply_tagging_rule",
-    annotations={
-        "title": "Apply Tagging Rule",
-        "readOnlyHint": False,
-        "destructiveHint": False,
-        "idempotentHint": False,
-        "openWorldHint": True,
-    },
+    annotations=ToolAnnotations(
+        title="Apply Tagging Rule",
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=True,
+    ),
 )
 async def papra_apply_tagging_rule(params: ApplyTaggingRuleInput) -> str:
     """Enqueue a background task to apply a tagging rule to all existing documents.
@@ -866,6 +901,7 @@ async def papra_apply_tagging_rule(params: ApplyTaggingRuleInput) -> str:
         )
         return _pretty_json(data)
     except Exception as exc:
+        logger.exception("Tool call failed")
         return format_error(exc)
 
 
@@ -890,9 +926,13 @@ def main() -> None:
     if transport == "stdio":
         mcp.run()
         return
+    if transport != "streamable-http":
+        raise RuntimeError(
+            f"Unsupported PAPRA_MCP_TRANSPORT: {transport!r} (expected 'stdio' or 'streamable-http')"
+        )
 
     mcp.run(
-        transport=transport,
+        transport="streamable-http",
         host=os.environ.get("PAPRA_MCP_HOST", "127.0.0.1"),
         port=int(os.environ.get("PAPRA_MCP_PORT", "8000")),
         transport_security=TransportSecuritySettings(
